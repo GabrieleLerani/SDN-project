@@ -3,6 +3,8 @@ from pox.core import core
 import pox.lib.packet as pkt
 from pox.lib.packet.ethernet import ethernet
 from pox.lib.util import dpidToStr
+from util import get_links_pair
+from util import get_key_from_value
 import networkx as nx
 
 
@@ -18,7 +20,9 @@ class Routing:
         switch_src_dpid = event.dpid
         gw_dpid = core.GatewayAccess.get_dpid_gw()
 
+        
         if eth_frame.find("icmp") and eth_frame.dst == core.GatewayAccess.gw_mac:
+            
             if gw_dpid != switch_src_dpid:
                 self.ip_traffic_to_gw(event)
             else:
@@ -45,43 +49,41 @@ class Routing:
         sw_to_host_port = core.hostDiscovery.hosts[src_host_ip]["port"] 
  
         # get the id of the source switch
-        S = self.get_key_from_value(core.linkDiscovery.switch_id, gw_dpid)
+        S = get_key_from_value(core.linkDiscovery.switch_id, gw_dpid)
 
         # get the id of the destination switch
-        D = self.get_key_from_value(core.linkDiscovery.switch_id, sw_dst)     
+        D = get_key_from_value(core.linkDiscovery.switch_id, sw_dst)     
 
         # get network graph
-        graph = core.linkDiscovery.getGraph()
+        graph = core.Graph.graph_with_gw_node
 
         # compute the shortest path between S and D
         path = list(nx.shortest_path(graph, S, D))
 
         # get path links as a list of tuple: [(1,2),(2,3)...]
-        path_links = self.get_links_pair(path)
+        path_links = get_links_pair(path)
 
         print(f"found path towards the host {src_host_ip}: {path_links}")
 
-        
+
+        # flow rule for traffic towards the gateway
+        msg = of.ofp_flow_mod()
+        msg.match = of.ofp_match(
+            dl_type=ethernet.IP_TYPE, dl_dst=host_mac
+        )
+        msg.flags=of.OFPFF_CHECK_OVERLAP
+
+
         for sw in path_links:
             src_dpid = core.linkDiscovery.switch_id[sw[0]]
             link_name = f"{sw[0]}_{sw[1]}"
             out_port = core.linkDiscovery.links[link_name].port1
 
-            # flow rule for traffic towards the gateway
-            msg = of.ofp_flow_mod()
-            msg.match = of.ofp_match(
-                dl_type=ethernet.IP_TYPE, dl_dst=host_mac
-            )
-            msg.flags=of.OFPFF_CHECK_OVERLAP
             msg.actions = [of.ofp_action_output(port=out_port)]
             core.openflow.sendToDPID(src_dpid, msg)
             
             if sw[1] == D:
                                
-                # setup the flow rule to match ICMP reply message from the gateway
-                msg = of.ofp_flow_mod()
-                msg.match = of.ofp_match(dl_type=ethernet.IP_TYPE, dl_dst=host_mac)
-                msg.flags=of.OFPFF_CHECK_OVERLAP
                 msg.actions = [of.ofp_action_output(port=sw_to_host_port)]
                 core.openflow.sendToDPID(sw_dst, msg)
 
@@ -94,8 +96,6 @@ class Routing:
         print("Sending back ICMP REPLY to gw", dpidToStr(gw_dpid))        
                 
 
-
-
     def ip_traffic_to_gw(self,event):
         
         # get gateway pdid
@@ -105,21 +105,22 @@ class Routing:
         switch_src_dpid = event.dpid
 
         # get the id of the source switch
-        S = self.get_key_from_value(core.linkDiscovery.switch_id, switch_src_dpid)
+        S = get_key_from_value(core.linkDiscovery.switch_id, switch_src_dpid)
 
         # get the id of the destination switch
-        D = self.get_key_from_value(core.linkDiscovery.switch_id, gw_dpid)
+        D = get_key_from_value(core.linkDiscovery.switch_id, gw_dpid)
 
         # get network graph
-        graph = core.linkDiscovery.getGraph()
+        graph = core.Graph.graph_with_gw_node
 
         # compute the shortest path between S and D
         path = list(nx.shortest_path(graph, S, D))
 
         # get path links as a list of tuple: [(1,2),(2,3)...]
-        path_links = self.get_links_pair(path)
+        path_links = get_links_pair(path)
 
         print(f"found path towards the gw: {path_links}")
+
 
         for sw in path_links:
             src_dpid = core.linkDiscovery.switch_id[sw[0]]
@@ -170,15 +171,6 @@ class Routing:
         e.payload = ipp
         return e.pack()
     
-
-    def get_links_pair(self, link_ids):
-        result_list = [(link_ids[i], link_ids[i + 1]) for i in range(len(link_ids) - 1)]
-        return result_list
-
-    def get_key_from_value(self, my_dict, target):
-        for key, value in my_dict.items():
-            if value == target:
-                return key
 
 
 def launch():

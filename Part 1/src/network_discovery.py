@@ -5,14 +5,25 @@ from pox.lib.addresses import EthAddr
 from pox.lib.packet.ethernet import ethernet
 from pox.lib.packet.arp import arp
 from pox.lib.addresses import IPAddr, EthAddr
-
 from pox.lib.util import dpidToStr
+from util import get_key_from_value
 import networkx as nx
 import numpy as np
+from pox.lib.revent.revent import EventMixin
+from pox.lib.revent.revent import Event
+
+# To use event handler you should know a priori what are the number
+# of links between switches
+LINKS = 12
+MAX_HOSTS = 5
+
+class linkDiscovered(Event):
+    def __init__(self):
+        Event.__init__(self)
 
 
 class Link:
-    def __init__(self, sid1, sid2, dpid1, port1, dpid2, port2):
+    def __init__(self, sid1, sid2, dpid1, port1, dpid2, port2, gw_link):
         self.name = str(sid1) + "_" + str(sid2)
         self.sid1 = sid1
         self.sid2 = sid2
@@ -20,18 +31,21 @@ class Link:
         self.dpid2 = dpidToStr(dpid2)
         self.port1 = int(port1)
         self.port2 = int(port2)
+        self.gw_link = gw_link
         self.flow = 0
+        
+class linkDiscovery(EventMixin):
+    _eventMixin_events = set([linkDiscovered,])
 
-class linkDiscovery:
     def __init__(self):
+        core.openflow.addListeners(self)
         self.switches = {}
         self.links = {}
         self.switch_id = {}
         self.id = 0
-        core.openflow.addListeners(self)
         Timer(5, self.sendProbes, recurring=True)
 
-    
+
     def _handle_ConnectionUp(self, event):
         self.switch_id[self.id] = event.dpid
         self.switches[event.dpid] = event.ofp.ports
@@ -43,8 +57,8 @@ class linkDiscovery:
         # host discovery packet
         if core.GatewayAccess.get_dpid_gw() == event.dpid:
             self.install_gw_rule()
-
-
+        
+    
     def _handle_PacketIn(self, event):
         eth_frame = event.parsed
         if eth_frame.src == EthAddr("00:11:22:33:44:55"):
@@ -57,11 +71,17 @@ class linkDiscovery:
                 list(self.switch_id.values()).index(dpid2)
             ]
             port2 = event.ofp.in_port
-            link = Link(sid1, sid2, dpid1, port1, dpid2, port2)
+            gw_link = dpid1 == core.GatewayAccess.get_dpid_gw() or dpid2 == core.GatewayAccess.get_dpid_gw() 
+            link = Link(sid1, sid2, dpid1, port1, dpid2, port2,gw_link)
             if link.name not in self.links:
+                
                 self.links[link.name] = link
                 print("discovered new link: " + link.name)
                 print(link.__dict__)
+
+                if len(self.links) == LINKS:
+                    self.raiseEvent(linkDiscovered)
+
 
     def sendProbes(self):
         """
@@ -88,7 +108,7 @@ class linkDiscovery:
     def install_gw_rule(self):
         """
         The gw is not intended to use for host discovery so we proactively install a rule
-        to drop all host discovery packets that come from switches 
+        to drop all host discovery packets that come from leaves and spines 
         """
         msg = of.ofp_flow_mod()
         msg.match = of.ofp_match(
@@ -112,45 +132,24 @@ class linkDiscovery:
         msg.actions = [of.ofp_action_output(port=of.OFPP_CONTROLLER)]
         core.openflow.sendToDPID(dpid, msg)
 
-    def getGraph(self):
-        N = len(self.switches)
-        adj = np.zeros((N, N))
-        weights = np.zeros((N, N))  # Initialize a weights matrix
-        for link in self.links:
-            sid1 = self.links[link].sid1
-            sid2 = self.links[link].sid2
-            weight = self.links[link].flow  # Get flows of the link
-            
-            adj[sid1, sid2] = 1
-            weights[sid1, sid2] = weight  # Assign the weight to the corresponding entry in the weights matrix
-            
-        graph = nx.from_numpy_matrix(adj)
-        nx.set_edge_attributes(graph, values={(u, v): weights[u, v] for u, v in graph.edges()}, name='weight')
-        return graph
-
-    def drawGraph(self,G):
-        # nodes
-        pos = nx.spring_layout(G, seed=7)
-        nx.draw_networkx_nodes(G, pos, node_size=700)
-
-    # TODO remove if no need
-    def updateWeights(self,g,u,v,new_weight):
-        
-        if g.has_edge(u, v):
-            g[u][v]['weight'] = new_weight
-
 
 class hostDiscovery:
-    def __init__(self):
+    def __init__(self,componentLinkDiscovery):
+        componentLinkDiscovery.addListeners(self)
         core.openflow.addListeners(self)
         self.hosts = {}
-        self.max_hosts = 5  # assumption
+        self.max_hosts = MAX_HOSTS  # assumption
         self.fake_mac_gw = EthAddr("00:00:00:00:11:11")
         self.fake_ip_gw = IPAddr("10.0.0.200") # fake gateway used for host discovery
+        self.connections = list()
+
+    def _handle_linkDiscovered(self,event):
+        print("All links have been discovered, starting host discovering...\n")
+        for conn in self.connections:
+            self.hostDiscovery(conn)
 
     def _handle_ConnectionUp(self, event):
-         self.hostDiscovery(event.connection)
-
+        self.connections.append(event.connection)
 
     def hostDiscovery(self, connection):
         for h in range(self.max_hosts):
@@ -170,7 +169,7 @@ class hostDiscovery:
             msg.data = ether.pack()
 
             # The arp message should be flooded to all because
-            # there is no assumption of the output port
+            # there is no assumption about the output port
             msg.actions.append(of.ofp_action_output(port=of.OFPP_ALL))
             connection.send(msg)
 
@@ -191,8 +190,10 @@ class hostDiscovery:
                         "mac": mac_host,
                     }
 
+                    sw_id = get_key_from_value(core.linkDiscovery.switch_id,event.dpid)
+                    sw_dpid = dpidToStr(self.hosts[ip_host]["switch"])
                     print("Host:", ip_host)
-                    print("Switch:", dpidToStr(self.hosts[ip_host]["switch"]))
+                    print("Switch:",sw_id,",",sw_dpid)
                     print("Port:", self.hosts[ip_host]["port"])
                     print("MAC:", self.hosts[ip_host]["mac"])
                     print()
@@ -200,4 +201,4 @@ class hostDiscovery:
 
 def launch():
     core.registerNew(linkDiscovery)
-    core.registerNew(hostDiscovery)
+    core.register(hostDiscovery(core.linkDiscovery))

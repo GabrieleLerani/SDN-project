@@ -7,7 +7,7 @@ from pox.lib.packet.ethernet import ethernet
 from pox.lib.packet.arp import arp
 from pox.lib.util import dpidToStr
 from pox.lib.util import str_to_dpid
-import ipaddress
+from util import check_same_network
 
 class GatewayAccess:
     def __init__(self) -> None:
@@ -18,12 +18,13 @@ class GatewayAccess:
     def _handle_PacketIn(self, event):
         packet = event.parsed
         if packet.type == packet.ARP_TYPE:
-
+            
             # flter ARP message used inside the network for host and link discovery
             if (packet.payload.opcode == arp.REQUEST and 
                 packet.src != core.hostDiscovery.fake_mac_gw and 
-                not self.check_same_network(packet.payload.protodst,self.gw_ip,"255.255.255.0")):
-            
+                packet.payload.protodst == self.gw_ip):
+                
+        
                 arp_packet = packet.payload
                 
                 print(packet.payload.__dict__)
@@ -31,9 +32,10 @@ class GatewayAccess:
                 self._handle_gw_ARPRequest(event, arp_packet)
 
             # handle only host-to-host ARP message and filter all related to fake gateways
-            elif (self.check_same_network(packet.payload.protodst,self.gw_ip,"255.255.255.0") and 
+            elif (check_same_network(packet.payload.protodst,self.gw_ip,"255.255.255.0") and 
                   core.hostDiscovery.fake_ip_gw != packet.payload.protosrc and
-                  core.hostDiscovery.fake_ip_gw != packet.payload.protodst):
+                  core.hostDiscovery.fake_ip_gw != packet.payload.protodst and
+                  self.gw_ip != packet.payload.protodst):
                 
                 arp_packet = packet.payload
 
@@ -49,17 +51,13 @@ class GatewayAccess:
         """
 
         msg = of.ofp_flow_mod()
-
+        
         dl_src = core.hostDiscovery.hosts[arp_packet.protodst]["mac"]
 
-        # TODO change dl_src and dl_dst
         msg.match = of.ofp_match(
             dl_type=ethernet.ARP_TYPE, dl_src=dl_src, dl_dst=arp_packet.hwsrc
         )
-        # Rule will expire after 5 seconds because it useful only to
-        # send back to the host the ARP reply
-        msg.hard_timeout = 5
-
+        
         msg.actions.append(of.ofp_action_output(port=event.ofp.in_port))
         event.connection.send(msg)
 
@@ -70,7 +68,7 @@ class GatewayAccess:
         arp_reply = arp()
         arp_reply.opcode = arp.REPLY
 
-        # As if the reply comes from the GW and not from the controller
+        # insert the mac address of the requested host
         arp_reply.hwsrc = core.hostDiscovery.hosts[arp_packet.protodst]["mac"]
         arp_reply.hwdst = arp_packet.hwsrc
         arp_reply.protosrc = arp_packet.protodst
@@ -144,11 +142,6 @@ class GatewayAccess:
         gw_dpid = str_to_dpid(str_gw_dpid)
         return gw_dpid
 
-
-    def check_same_network(self, ip1, ip2, subnet_mask):
-        
-        ip_network = ipaddress.IPv4Network(f"{str(ip1)}/{subnet_mask}", strict=False)
-        return ipaddress.IPv4Address(str(ip2)) in ip_network
 
 def launch():
     core.registerNew(GatewayAccess)
