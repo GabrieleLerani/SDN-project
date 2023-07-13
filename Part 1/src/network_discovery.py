@@ -14,6 +14,7 @@ from pox.lib.revent.revent import Event
 
 # To use event handler you should know a priori what are the number
 # of links between switches
+#LINKS = 48
 LINKS = 12
 MAX_HOSTS = 5
 
@@ -42,9 +43,8 @@ class linkDiscovery(EventMixin):
         self.switches = {}
         self.links = {}
         self.switch_id = {}
-        self.id = 0
+        self.id = 1
         Timer(5, self.sendProbes, recurring=True)
-
 
     def _handle_ConnectionUp(self, event):
         self.switch_id[self.id] = event.dpid
@@ -72,9 +72,10 @@ class linkDiscovery(EventMixin):
             ]
             port2 = event.ofp.in_port
             gw_link = dpid1 == core.GatewayAccess.get_dpid_gw() or dpid2 == core.GatewayAccess.get_dpid_gw() 
-            link = Link(sid1, sid2, dpid1, port1, dpid2, port2,gw_link)
+            link = Link(sid1, sid2, dpid1, port1, dpid2, port2, gw_link)
+            
             if link.name not in self.links:
-                
+
                 self.links[link.name] = link
                 print("discovered new link: " + link.name)
                 print(link.__dict__)
@@ -144,7 +145,9 @@ class hostDiscovery:
         self.connections = list()
 
     def _handle_linkDiscovered(self,event):
-        print("All links have been discovered, starting host discovering...\n")
+
+        print(f"All {len(core.linkDiscovery.links)} links have been discovered, starting host discovering...\n")
+        
         for conn in self.connections:
             self.hostDiscovery(conn)
 

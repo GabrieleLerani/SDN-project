@@ -11,9 +11,6 @@ import networkx as nx
 class Routing:
     def __init__(self):
         core.openflow.addListeners(self)
-        self.host_location = {}
-        self.host_ip_mac = {}
-        self.max_hosts = 5
 
     def _handle_PacketIn(self, event):
         eth_frame = event.parsed

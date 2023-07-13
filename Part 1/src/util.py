@@ -12,3 +12,9 @@ def get_key_from_value(my_dict, target):
 def check_same_network(ip1, ip2, subnet_mask):
     ip_network = ipaddress.IPv4Network(f"{str(ip1)}/{subnet_mask}", strict=False)
     return ipaddress.IPv4Address(str(ip2)) in ip_network
+
+def reverse_string(string):
+    numbers = string.split('_')  
+    numbers.reverse()  
+    reversed_string = '_'.join(numbers) 
+    return reversed_string

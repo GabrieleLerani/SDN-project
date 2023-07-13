@@ -44,8 +44,14 @@ class Graph:
         print(G)
         print(G.edges.data())
         return G
-
     
+    def update_weight(self, G, u, v, new_weight, decrement = False):
+        if G.has_edge(u,v):
+            G[u][v]["weight"] += new_weight if not decrement else -1 * new_weight
+        else:
+            print(f"Error:({u},{v}) not in graph")
+
+
 
 def launch():
     core.register(Graph(core.linkDiscovery))

@@ -1,12 +1,10 @@
 import pox.openflow.libopenflow_01 as of
 from pox.core import core
-from pox.lib.packet.ipv4 import ipv4
-import pox.lib.packet as pkt
 from pox.lib.packet.ethernet import ethernet
 from pox.lib.util import dpidToStr
 from util import get_links_pair
 from util import get_key_from_value
-from util import check_same_network
+from util import reverse_string
 from pox.lib.addresses import IPAddr
 import networkx as nx
 
@@ -17,6 +15,7 @@ class E2WRouting:
     def __init__(self):
         core.openflow.addListeners(self)
         self.flows = {}
+         
 
     def _handle_PacketIn(self, event):
         packet = event.parsed
@@ -46,12 +45,15 @@ class E2WRouting:
 
             if flow_id in self.flows.keys():
 
+                graph = core.Graph.graph_without_gw
+
                 # decrease flow counter for every link used by the flow
                 for link in self.flows[flow_id]:
                     link_name = f"{link[0]}_{link[1]}"
-                    reversed_link = link_name[::-1]
-                    core.linkDiscovery.links[link_name].flow -= 1
-                    core.linkDiscovery.links[reversed_link].flow -= 1
+                    reversed_link = reverse_string(link_name)
+                    # core.linkDiscovery.links[link_name].flow -= 1
+                    # core.linkDiscovery.links[reversed_link].flow -= 1
+                    core.Graph.update_weight(graph,link[0],link[1],1,decrement=True)
 
                 # remove flow 
                 del self.flows[flow_id]
@@ -83,7 +85,13 @@ class E2WRouting:
         # get path links as a list of tuple: [(1,2),(2,3)...]
         path_links = get_links_pair(path)
 
-        print(f"found path for traffics between {src_host_ip} and {dst_host_ip}: {path}")
+
+        flow_sum = 0
+        # TODO remove
+        for node in path_links:
+            flow_sum += graph[node[0]][node[1]]["weight"]
+            
+        print(f"found path for traffics between {src_host_ip} and {dst_host_ip}: {path} with {flow_sum} flows")
 
         # a flow is identified by src ip and dst ip, it should be changed to consider 
         # different flows from the same host to the same machine
@@ -114,14 +122,17 @@ class E2WRouting:
                 
                 src_dpid = core.linkDiscovery.switch_id[sw[0]]
                 link_name = f"{sw[0]}_{sw[1]}"
-                reversed_link = link_name[::-1]
+                #reversed_link = reverse_string(link_name)
                 out_port = core.linkDiscovery.links[link_name].port1
 
-                # increment flow on that edge
-                core.linkDiscovery.links[link_name].flow += 1
-                core.linkDiscovery.links[reversed_link].flow += 1
+                # # increment flow on that edge
+                # core.linkDiscovery.links[link_name].flow += 1
+                # core.linkDiscovery.links[reversed_link].flow += 1
+                core.Graph.update_weight(graph,sw[0],sw[1],1)
 
-                print(f"{link_name}: {core.linkDiscovery.links[link_name].flow}")
+                flow = graph[sw[0]][sw[1]]["weight"]
+
+                print(f"Link {link_name} has {flow} flow")
 
                 msg.actions = [of.ofp_action_output(port=out_port)]  
                 core.openflow.sendToDPID(src_dpid, msg)
